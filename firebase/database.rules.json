@@ -1,0 +1,23 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+    "ycats": {
+      ".indexOn": ["createdAt", "username", "date"],
+      "users": {
+        "$uid": {
+          ".write": "$uid === auth.uid || root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+        }
+      },
+      "updates": {
+        ".write": "root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+      },
+      "events": {
+        ".write": "root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+      },
+      "attendance": {
+        ".write": "root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+      }
+    }
+  }
+}
