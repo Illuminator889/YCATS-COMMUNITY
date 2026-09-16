@@ -1,22 +1,61 @@
 {
   "rules": {
-    ".read": "auth != null",
-    ".write": "auth != null",
+    ".read": false,
+    ".write": false,
     "ycats": {
-      ".indexOn": ["createdAt", "username", "date"],
       "users": {
         "$uid": {
-          ".write": "$uid === auth.uid || root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+          ".read": "auth != null && (auth.uid === $uid || root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN')",
+          ".write": "auth != null && (auth.uid === $uid || root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN')",
+          ".validate": "newData.hasChildren(['uid','username','fullName','email','role','status','createdAt'])",
+          "role": { ".write": "auth != null && root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN'" }
+        }
+      },
+      "usernameIndex": {
+        "$username": {
+          ".read": "auth != null",
+          ".write": "auth != null && !data.exists()",
+          ".validate": "newData.hasChildren(['uid'])"
         }
       },
       "updates": {
-        ".write": "root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+        ".read": "auth != null",
+        "$id": {
+          ".write": "auth != null && root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN'",
+          ".validate": "newData.hasChildren(['id','title','message','authorUid','createdAt','published'])"
+        }
       },
       "events": {
-        ".write": "root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+        ".read": "auth != null",
+        "$id": {
+          ".write": "auth != null && root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN'",
+          ".validate": "newData.hasChildren(['id','title','description','date','location','createdBy','createdAt','status'])"
+        }
+      },
+      "questions": {
+        "$id": {
+          ".read": "auth != null && (data.child('authorUid').val() === auth.uid || root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN')",
+          ".write": "auth != null && (newData.child('authorUid').val() === auth.uid || root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN')",
+          ".validate": "newData.hasChildren(['id','authorUid','question','status','createdAt'])"
+        }
+      },
+      "chats": {
+        "$questionId": {
+          ".read": "auth != null",
+          "$messageId": {
+            ".write": "auth != null",
+            ".validate": "newData.hasChildren(['id','questionId','senderUid','message','createdAt'])"
+          }
+        }
       },
       "attendance": {
-        ".write": "root.child('ycats/users').child(auth.uid).child('role').val() === 'admin'"
+        "$date": {
+          "$uid": {
+            ".read": "auth != null && root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN'",
+            ".write": "auth != null && root.child('ycats/users').child(auth.uid).child('role').val() === 'ADMIN'",
+            ".validate": "newData.hasChildren(['uid','date','status','markedBy','markedAt'])"
+          }
+        }
       }
     }
   }

@@ -1,10 +1,13 @@
 # Firebase production checklist
 
-- Enable Firebase Authentication > Email/Password.
-- Require authenticated reads in Realtime Database.
-- Use Firebase App Check before public launch.
-- Remove the seeded `admin/admin123` account.
-- Never store passwords in Realtime Database.
-- Move roles to a server-controlled profile document; do not trust a client-provided role.
-- Add Cloud Functions or a Ktor service for privileged role changes and moderation.
-- Add emulator tests for database rules before deployment.
+Before release:
+
+1. Publish `firebase/database.rules.json` in Firebase Console.
+2. Enable Email/Password authentication.
+3. Create the first admin profile manually in `ycats/users/{uid}` with role `ADMIN`, or use a trusted server/Cloud Function.
+4. Remove any public time-based rules.
+5. Enable App Check and restrict the Android API key to package `mw.ycats.app` and the correct SHA-1 fingerprints.
+6. Build a release APK/AAB and test rules using the Firebase Emulator Suite.
+7. Do not ship service-account credentials in the Android app.
+
+The Android app now has Firebase-backed repositories for Auth, Realtime Database listeners, and Storage profile photo uploads. The old local `YcatsDb` file remains only as legacy code and should be deleted after the Firebase UI migration is verified.
