@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -78,7 +79,9 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import mw.ycats.app.data.firebase.FirebaseAuthRepository
 import mw.ycats.app.domain.validation.AuthValidation
+import mw.ycats.shared.model.UserProfile
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -92,7 +95,7 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
 private val Context.dataStore by preferencesDataStore("ycats_settings")
-private const val FIREBASE_URL = "https://ycats-community-default-rtdb.firebaseio.com"
+private const val FIREBASE_URL = "https://ycats-f0585-default-rtdb.firebaseio.com"
 
 data class User(
     val username: String,
@@ -339,6 +342,8 @@ class FirebaseSync {
 }
 
 class MainViewModel(private val db: YcatsDb) : ViewModel() {
+    private val firebaseAuthRepo = FirebaseAuthRepository()
+
     var user by mutableStateOf<User?>(null)
         private set
 
@@ -367,11 +372,38 @@ class MainViewModel(private val db: YcatsDb) : ViewModel() {
         attendance = db.attendance()
     }
 
-    fun login(username: String, password: String) {
-        val trimmedUsername = username.trim()
-        val usernameError = AuthValidation.validateUsername(trimmedUsername)
-        val passwordError = AuthValidation.validatePassword(password)
+    private fun asUser(profile: UserProfile): User = User(
+        username = profile.username,
+        password = "",
+        role = profile.role.name.lowercase(),
+        fullName = profile.fullName,
+        photo = profile.photoUrl
+    )
 
+    fun login(usernameOrEmail: String, password: String) {
+        val trimmed = usernameOrEmail.trim()
+
+        if (trimmed.contains("@")) {
+            val emailError = AuthValidation.validateEmail(trimmed)
+            if (emailError != null) {
+                message = emailError
+                return
+            }
+            viewModelScope.launch {
+                firebaseAuthRepo.login(trimmed, password).onSuccess { profile ->
+                    user = asUser(profile)
+                    screen = "home"
+                    loadAll()
+                    message = "Welcome, ${profile.fullName}"
+                }.onFailure { error ->
+                    message = error.message ?: "Login failed."
+                }
+            }
+            return
+        }
+
+        val usernameError = AuthValidation.validateUsername(trimmed)
+        val passwordError = AuthValidation.validatePassword(password)
         if (usernameError != null) {
             message = usernameError
             return
@@ -382,7 +414,7 @@ class MainViewModel(private val db: YcatsDb) : ViewModel() {
         }
 
         viewModelScope.launch {
-            val result = db.login(trimmedUsername, password)
+            val result = db.login(trimmed, password)
             if (result != null) {
                 user = result
                 screen = "home"
@@ -394,15 +426,22 @@ class MainViewModel(private val db: YcatsDb) : ViewModel() {
         }
     }
 
-    fun register(username: String, password: String, fullName: String) {
+    fun register(username: String, email: String, password: String, fullName: String) {
         val trimmedUsername = username.trim()
+        val trimmedEmail = email.trim()
         val trimmedFullName = fullName.trim()
+
         val usernameError = AuthValidation.validateUsername(trimmedUsername)
+        val emailError = AuthValidation.validateEmail(trimmedEmail)
         val fullNameError = AuthValidation.validateFullName(trimmedFullName)
         val passwordError = AuthValidation.validatePassword(password)
 
         if (usernameError != null) {
             message = usernameError
+            return
+        }
+        if (emailError != null) {
+            message = emailError
             return
         }
         if (fullNameError != null) {
@@ -415,17 +454,21 @@ class MainViewModel(private val db: YcatsDb) : ViewModel() {
         }
 
         viewModelScope.launch {
-            val result = db.register(trimmedUsername, password, trimmedFullName)
-            message = result.second
-            if (result.first) {
-                user = db.login(trimmedUsername, password)
-                screen = "home"
-                loadAll()
-            }
+            firebaseAuthRepo.register(trimmedEmail, password, trimmedUsername, trimmedFullName)
+                .onSuccess { profile ->
+                    user = asUser(profile)
+                    screen = "home"
+                    loadAll()
+                    message = "Account created successfully."
+                }
+                .onFailure { error ->
+                    message = error.message ?: "Registration failed."
+                }
         }
     }
 
     fun logout() {
+        firebaseAuthRepo.logout()
         user = null
         screen = "login"
     }
@@ -535,16 +578,16 @@ fun YCATSApp() {
 
 @Composable
 fun LoginScreen(vm: MainViewModel) {
-    var username by remember { mutableStateOf("") }
+    var usernameOrEmail by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    val usernameError = AuthValidation.validateUsername(username)
+    val identifierError = if (usernameOrEmail.contains("@")) AuthValidation.validateEmail(usernameOrEmail) else AuthValidation.validateUsername(usernameOrEmail)
     val passwordError = AuthValidation.validatePassword(password)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
-                brush = Brush.verticalGradient(
+                Brush.verticalGradient(
                     listOf(
                         Color(0xFF0B1F3A),
                         Color(0xFF1565C0),
@@ -569,15 +612,15 @@ fun LoginScreen(vm: MainViewModel) {
                 Text("Youth Counselling And Talents Show", color = Color(0xFF5F6F86))
 
                 OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
+                    value = usernameOrEmail,
+                    onValueChange = { usernameOrEmail = it },
+                    label = { Text("Username or email") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    isError = usernameError != null && username.isNotBlank()
+                    isError = identifierError != null && usernameOrEmail.isNotBlank()
                 )
-                if (usernameError != null && username.isNotBlank()) {
-                    Text(usernameError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                if (identifierError != null && usernameOrEmail.isNotBlank()) {
+                    Text(identifierError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
 
                 OutlinedTextField(
@@ -594,7 +637,7 @@ fun LoginScreen(vm: MainViewModel) {
                 }
 
                 Button(
-                    onClick = { vm.login(username, password) },
+                    onClick = { vm.login(usernameOrEmail, password) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp)
                 ) { Text("Login") }
@@ -615,17 +658,19 @@ fun LoginScreen(vm: MainViewModel) {
 fun RegisterScreen(vm: MainViewModel) {
     var fullName by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
 
     val fullNameError = AuthValidation.validateFullName(fullName)
     val usernameError = AuthValidation.validateUsername(username)
+    val emailError = AuthValidation.validateEmail(email)
     val passwordError = AuthValidation.validatePassword(password)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
-                brush = Brush.verticalGradient(
+                Brush.verticalGradient(
                     listOf(
                         Color(0xFF0B1F3A),
                         Color(0xFF1565C0),
@@ -646,56 +691,27 @@ fun RegisterScreen(vm: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text("Create account", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0B1F3A))
-                OutlinedTextField(
-                    value = fullName,
-                    onValueChange = { fullName = it },
-                    label = { Text("Full name") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    isError = fullNameError != null && fullName.isNotBlank()
-                )
-                if (fullNameError != null && fullName.isNotBlank()) {
-                    Text(fullNameError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
 
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    isError = usernameError != null && username.isNotBlank()
-                )
-                if (usernameError != null && username.isNotBlank()) {
-                    Text(usernameError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
+                OutlinedTextField(value = fullName, onValueChange = { fullName = it }, label = { Text("Full name") }, modifier = Modifier.fillMaxWidth(), singleLine = true, isError = fullNameError != null && fullName.isNotBlank())
+                if (fullNameError != null && fullName.isNotBlank()) Text(fullNameError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
 
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    isError = passwordError != null && password.isNotBlank()
-                )
-                if (passwordError != null && password.isNotBlank()) {
-                    Text(passwordError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
+                OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true, isError = usernameError != null && username.isNotBlank())
+                if (usernameError != null && username.isNotBlank()) Text(usernameError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+
+                OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), singleLine = true, isError = emailError != null && email.isNotBlank())
+                if (emailError != null && email.isNotBlank()) Text(emailError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+
+                OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(), isError = passwordError != null && password.isNotBlank())
+                if (passwordError != null && password.isNotBlank()) Text(passwordError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
 
                 Button(
-                    onClick = { vm.register(username, password, fullName) },
+                    onClick = { vm.register(username, email, password, fullName) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp)
                 ) { Text("Register") }
 
-                TextButton(onClick = { vm.screen = "login" }) {
-                    Text("Back to login")
-                }
-
-                if (vm.message.isNotBlank()) {
-                    Text(vm.message, color = MaterialTheme.colorScheme.primary)
-                }
+                TextButton(onClick = { vm.screen = "login" }) { Text("Back to login") }
+                if (vm.message.isNotBlank()) Text(vm.message, color = MaterialTheme.colorScheme.primary)
             }
         }
     }
@@ -740,12 +756,8 @@ fun MainShell(vm: MainViewModel) {
                         contentDescription = null,
                         tint = if (vm.online) Color(0xFF00A86B) else Color(0xFFEA5455)
                     )
-                    IconButton(onClick = { vm.syncCloud() }) {
-                        Icon(Icons.Default.Sync, contentDescription = "Sync")
-                    }
-                    IconButton(onClick = { vm.logout() }) {
-                        Icon(Icons.Default.ExitToApp, contentDescription = "Logout")
-                    }
+                    IconButton(onClick = { vm.syncCloud() }) { Icon(Icons.Default.Sync, contentDescription = "Sync") }
+                    IconButton(onClick = { vm.logout() }) { Icon(Icons.Default.ExitToApp, contentDescription = "Logout") }
                 }
             )
         },
@@ -811,11 +823,7 @@ fun HomeScreen(vm: MainViewModel) {
         item { Button(onClick = { vm.screen = "updates" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("View latest updates") } }
         item { Button(onClick = { vm.screen = "events" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("View events") } }
         item { Button(onClick = { vm.screen = "ask" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Ask YCATS") } }
-
-        if (vm.user?.role == "admin") {
-            item { Button(onClick = { vm.screen = "admin" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Admin dashboard") } }
-        }
-
+        if (vm.user?.role == "admin") item { Button(onClick = { vm.screen = "admin" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Admin dashboard") } }
         if (vm.message.isNotBlank()) {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F2FD)), shape = RoundedCornerShape(16.dp)) {
@@ -828,16 +836,9 @@ fun HomeScreen(vm: MainViewModel) {
 
 @Composable
 fun UpdatesScreen(vm: MainViewModel) {
-    LazyColumn(
-        modifier = Modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    LazyColumn(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         items(vm.updates) { update ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
-            ) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(update.title, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color(0xFF0B1F3A))
                     Text(update.message, color = Color(0xFF4B647D))
@@ -850,16 +851,9 @@ fun UpdatesScreen(vm: MainViewModel) {
 
 @Composable
 fun EventsScreen(vm: MainViewModel) {
-    LazyColumn(
-        modifier = Modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    LazyColumn(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         items(vm.events) { event ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
-            ) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(event.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color(0xFF0B1F3A))
                     Text(event.description, color = Color(0xFF4B647D))
@@ -875,39 +869,19 @@ fun EventsScreen(vm: MainViewModel) {
 fun QuestionsScreen(vm: MainViewModel) {
     var question by remember { mutableStateOf("") }
 
-    LazyColumn(
-        modifier = Modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    LazyColumn(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Ask the community", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                    OutlinedTextField(
-                        value = question,
-                        onValueChange = { question = it },
-                        label = { Text("Your question") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3
-                    )
-                    Button(
-                        onClick = {
-                            vm.addQuestion(question)
-                            question = ""
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp)
-                    ) { Text("Send question") }
+                    OutlinedTextField(value = question, onValueChange = { question = it }, label = { Text("Your question") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                    Button(onClick = { vm.addQuestion(question); question = "" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Send question") }
                 }
             }
         }
 
         items(vm.questions.filter { it.username == vm.user?.username || vm.user?.role == "admin" }) { item ->
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { vm.openQuestion(item) },
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
-            ) {
+            Card(modifier = Modifier.fillMaxWidth().clickable { vm.openQuestion(item) }, shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(item.question, fontWeight = FontWeight.SemiBold)
                     if (item.answer.isNotBlank()) {
@@ -926,18 +900,10 @@ fun ChatScreen(vm: MainViewModel) {
     var messageText by remember { mutableStateOf("") }
     val currentQuestion = vm.questions.firstOrNull { it.id == vm.chats.firstOrNull()?.questionId } ?: vm.questions.firstOrNull()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Conversation", fontSize = 24.sp, fontWeight = FontWeight.Bold)
 
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(vm.chats) { msg ->
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -949,12 +915,7 @@ fun ChatScreen(vm: MainViewModel) {
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = messageText,
-                onValueChange = { messageText = it },
-                modifier = Modifier.weight(1f),
-                label = { Text("Reply") }
-            )
+            OutlinedTextField(value = messageText, onValueChange = { messageText = it }, modifier = Modifier.weight(1f), label = { Text("Reply") })
             Spacer(modifier = Modifier.width(8.dp))
             IconButton(onClick = { currentQuestion?.let { q -> vm.sendChat(q.id, messageText); messageText = "" } }) {
                 Icon(Icons.Default.Send, contentDescription = "Send")
@@ -969,20 +930,8 @@ fun ProfileScreen(vm: MainViewModel) {
         uri?.let { vm.updatePhoto(it.toString()) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(110.dp)
-                .clip(CircleShape)
-                .background(Color(0xFFE3EFFD)),
-            contentAlignment = Alignment.Center
-        ) {
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Box(modifier = Modifier.size(110.dp).clip(CircleShape).background(Color(0xFFE3EFFD)), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(70.dp), tint = Color(0xFF1565C0))
         }
 
@@ -990,37 +939,19 @@ fun ProfileScreen(vm: MainViewModel) {
         Text("@${vm.user?.username ?: ""}", color = Color(0xFF4B647D))
         Text("Role: ${vm.user?.role ?: "member"}", color = Color(0xFF6A7A8F))
 
-        Button(onClick = { launcher.launch("image/*") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-            Text("Choose profile photo")
-        }
-
-        if (vm.user?.role == "admin") {
-            Button(onClick = { vm.screen = "admin" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                Text("Open admin dashboard")
-            }
-        }
+        Button(onClick = { launcher.launch("image/*") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Choose profile photo") }
+        if (vm.user?.role == "admin") Button(onClick = { vm.screen = "admin" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Open admin dashboard") }
     }
 }
 
 @Composable
 fun AttendanceScreen(vm: MainViewModel) {
-    LazyColumn(
-        modifier = Modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    LazyColumn(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Attendance", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
 
         items(vm.users) { user ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(user.fullName, fontWeight = FontWeight.SemiBold)
                         Text(user.username, color = Color(0xFF6A7A8F))
@@ -1032,10 +963,7 @@ fun AttendanceScreen(vm: MainViewModel) {
         }
 
         item { Spacer(modifier = Modifier.height(8.dp)); Text("History", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-
-        items(vm.attendance) { attendance ->
-            Text("${attendance.date} • ${attendance.username} • ${attendance.status}", color = Color(0xFF4B647D))
-        }
+        items(vm.attendance) { attendance -> Text("${attendance.date} • ${attendance.username} • ${attendance.status}", color = Color(0xFF4B647D)) }
     }
 }
 
@@ -1049,52 +977,22 @@ fun AdminScreen(vm: MainViewModel) {
     var eventLocation by remember { mutableStateOf("") }
     var answer by remember { mutableStateOf("") }
 
-    LazyColumn(
-        modifier = Modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    LazyColumn(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Admin Dashboard", fontSize = 24.sp, fontWeight = FontWeight.Bold) }
         item { Text("Users: ${vm.users.size}   Updates: ${vm.updates.size}   Events: ${vm.events.size}   Questions: ${vm.questions.size}") }
         item { Divider() }
         item { Text("Create update", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-        item {
-            OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
-        }
-        item {
-            OutlinedTextField(value = msg, onValueChange = { msg = it }, label = { Text("Message") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-        }
-        item {
-            Button(onClick = { vm.addUpdate(title, msg); title = ""; msg = "" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                Text("Publish update")
-            }
-        }
+        item { OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth()) }
+        item { OutlinedTextField(value = msg, onValueChange = { msg = it }, label = { Text("Message") }, modifier = Modifier.fillMaxWidth(), minLines = 2) }
+        item { Button(onClick = { vm.addUpdate(title, msg); title = ""; msg = "" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Publish update") } }
 
         item { Divider() }
         item { Text("Create event", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-        item {
-            OutlinedTextField(value = eventTitle, onValueChange = { eventTitle = it }, label = { Text("Event title") }, modifier = Modifier.fillMaxWidth())
-        }
-        item {
-            OutlinedTextField(value = eventDescription, onValueChange = { eventDescription = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-        }
-        item {
-            OutlinedTextField(value = eventDate, onValueChange = { eventDate = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth())
-        }
-        item {
-            OutlinedTextField(value = eventLocation, onValueChange = { eventLocation = it }, label = { Text("Location") }, modifier = Modifier.fillMaxWidth())
-        }
-        item {
-            Button(
-                onClick = {
-                    vm.addEvent(eventTitle, eventDescription, eventDate, eventLocation)
-                    eventTitle = ""; eventDescription = ""; eventDate = ""; eventLocation = ""
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text("Create event")
-            }
-        }
+        item { OutlinedTextField(value = eventTitle, onValueChange = { eventTitle = it }, label = { Text("Event title") }, modifier = Modifier.fillMaxWidth()) }
+        item { OutlinedTextField(value = eventDescription, onValueChange = { eventDescription = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth(), minLines = 2) }
+        item { OutlinedTextField(value = eventDate, onValueChange = { eventDate = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth()) }
+        item { OutlinedTextField(value = eventLocation, onValueChange = { eventLocation = it }, label = { Text("Location") }, modifier = Modifier.fillMaxWidth()) }
+        item { Button(onClick = { vm.addEvent(eventTitle, eventDescription, eventDate, eventLocation); eventTitle = ""; eventDescription = ""; eventDate = ""; eventLocation = "" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Create event") } }
 
         item { Divider() }
         item { Text("Manage users", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
@@ -1121,9 +1019,7 @@ fun AdminScreen(vm: MainViewModel) {
                         Text("Answer: ${question.answer}", color = Color(0xFF00A86B))
                     } else {
                         OutlinedTextField(value = answer, onValueChange = { answer = it }, label = { Text("Answer") }, modifier = Modifier.fillMaxWidth())
-                        Button(onClick = { vm.answerQuestion(question.id, answer); answer = "" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                            Text("Reply")
-                        }
+                        Button(onClick = { vm.answerQuestion(question.id, answer); answer = "" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Reply") }
                     }
                 }
             }
