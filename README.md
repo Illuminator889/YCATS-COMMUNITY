@@ -2,46 +2,57 @@
 
 YCATS (Youth Counselling And Talents Show) is a mobile-first community platform for youth support, events, announcements, questions, attendance and talent activities.
 
-## Current app
+## Current state
 
-The `app/` module is an Android Jetpack Compose application with:
+This repository now contains:
 
-- Premium YCATS visual language: navy/blue/green brand palette, rounded cards, elevated dashboard surfaces and responsive content spacing.
-- Local-first data access using Preferences DataStore, with cloud sync to Firebase Realtime Database.
-- Login and registration with client-side validation and PBKDF2 password hashing for the local fallback mode.
-- Member, guardian and administrator experiences for updates, events, Q&A/chat, profiles and attendance.
+- a polished Android Jetpack Compose app scaffold in `app/`
+- stronger client validation for auth and content screens
+- a shared data contract in `shared/` for desktop/backend preparation
+- Firebase security guidelines and schema documentation in `firebase/`
 
-## Firebase setup
+## App blueprint
 
-The app currently uses Firebase Realtime Database REST calls for cloud sync. Before shipping, configure Firebase security and move authentication to Firebase Authentication.
+The Android app is the first client in the YCATS platform and is organized around the following user flows:
 
-1. Create a Firebase project and enable Realtime Database.
-2. Set the database region and replace `FIREBASE_URL` in `MainActivity.kt` with your project URL.
-3. Apply the rules in `firebase/database.rules.json`.
-4. Do not commit service-account credentials or API keys.
-5. For production authentication, enable Email/Password in Firebase Authentication and migrate accounts from the local fallback store.
+- login and registration
+- dashboard overview
+- updates feed
+- events list
+- questions and chat support
+- profile management
+- attendance records
+- admin dashboard
 
-The current local fallback is intentionally useful for offline demos, but it should not be treated as the production identity system.
+## Firebase direction
+
+The current implementation uses a local-first data store and cloud sync placeholders. The correct production path is:
+
+1. Firebase Authentication for secure sign-in and sign-up
+2. Firebase Realtime Database or Firestore for app data
+3. role-based database rules
+4. server-side moderation for admin operations
+5. App Check before public launch
+
+See `firebase/database.rules.json` and `firebase/PRODUCTION_CHECKLIST.md` for the recommended security and deployment configuration.
+
+## Shared model layer
+
+The project includes a shared model contract in `shared/src/commonMain/kotlin/mw/ycats/shared/model/Models.kt` so the application can later share the same types with a desktop client or backend service without duplicating business logic.
 
 ## Build
 
-Open the repository in Android Studio with JDK 17 and run:
+Open in Android Studio with JDK 17 and run:
 
 ```bash
 ./gradlew :app:assembleDebug
 ```
 
-Install the generated APK from `app/build/outputs/apk/debug/` on an Android 8.0+ device or emulator.
-
-## Architecture direction
-
-`shared/` documents the platform-neutral contract for a future desktop client or Ktor service. The Android app remains the first client, while the data models and Firebase paths are designed to be shared by mobile, desktop and web clients.
-
 ## Demo account
 
-The local demo seed creates:
+For local demo use, the app seeds an admin account:
 
-- Username: `admin`
-- Password: `admin123`
+- username: `admin`
+- password: `admin123`
 
-Change or remove this seed before any public deployment.
+This should never be used in a public or production environment.
