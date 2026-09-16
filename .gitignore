@@ -1,0 +1,18 @@
+# Gradle files
+.gradle
+.idea
+*.iml
+/local.properties
+/.idea/workspace.xml
+/.idea/libraries
+/.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.jks
+*.keystore
+/build
+**/build
+/.gradle
